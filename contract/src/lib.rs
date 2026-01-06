@@ -44,7 +44,7 @@ mod error {
 }
 
 /// Account type - can be either an external account (user) or a contract
-#[derive(Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize, Debug)]
 #[archive_attr(derive(CheckBytes))]
 pub enum Account {
     /// An externally owned account (user with BLS public key)
@@ -82,6 +82,7 @@ impl Ord for Account {
 /// Get the sender account from the call stack
 /// - If called directly by a user, returns External with their public key
 /// - If called by another contract, returns Contract with caller ID
+#[cfg(target_family = "wasm")]
 fn sender_account() -> Account {
     if abi::callstack().len() == 1 {
         Account::External(
@@ -90,6 +91,13 @@ fn sender_account() -> Account {
     } else {
         Account::Contract(abi::caller().expect("ICC expects a caller"))
     }
+}
+
+/// Mock implementation for tests - returns a default account
+/// This allows the contract to compile for unit tests
+#[cfg(not(target_family = "wasm"))]
+fn sender_account() -> Account {
+    Account::External(PublicKey::default())
 }
 
 /// Proposal structure
@@ -130,12 +138,19 @@ static mut STATE: VoteContract = VoteContract {
 };
 
 /// Query token balance for an account
+#[cfg(target_family = "wasm")]
 fn get_token_balance(token_contract: ContractId, public_key: &PublicKey) -> u64 {
     // Call token contract's balance_of function
     match abi::call(token_contract, "balance_of", public_key) {
         Ok(balance) => balance,
         Err(_) => 0, // Return 0 if call fails
     }
+}
+
+/// Mock implementation for tests (non-WASM)
+#[cfg(not(target_family = "wasm"))]
+fn get_token_balance(_token_contract: ContractId, _public_key: &PublicKey) -> u64 {
+    0 // Return 0 in test mode - tests should test contract state directly
 }
 
 impl VoteContract {
@@ -227,8 +242,8 @@ impl VoteContract {
         let voter = sender_account();
 
         // Get the public key for token balance lookup
-        let public_key = match &voter {
-            Account::External(pk) => *pk,
+        let public_key = match voter {
+            Account::External(pk) => pk,
             Account::Contract(_) => panic!("{}", error::CONTRACTS_CANNOT_VOTE),
         };
 
@@ -333,10 +348,15 @@ impl VoteContract {
 }
 
 // ==================== Contract Entry Points ====================
+// These are only compiled for WASM targets
+
+#[cfg(target_family = "wasm")]
+mod entry_points {
+    use super::*;
 
 /// Initialize contract with specified admin and token contract
 #[no_mangle]
-unsafe fn init(arg_len: u32) -> u32 {
+pub unsafe fn init(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |(admin, token_contract): (Account, ContractId)| {
         STATE.init(admin, token_contract);
     })
@@ -344,7 +364,7 @@ unsafe fn init(arg_len: u32) -> u32 {
 
 /// Add proposal (admin only) - caller determined from call stack
 #[no_mangle]
-unsafe fn add_proposal(arg_len: u32) -> u32 {
+pub unsafe fn add_proposal(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |description: String| {
         STATE.add_proposal(description)
     })
@@ -352,7 +372,7 @@ unsafe fn add_proposal(arg_len: u32) -> u32 {
 
 /// Close proposal (admin only) - caller determined from call stack
 #[no_mangle]
-unsafe fn close_proposal(arg_len: u32) -> u32 {
+pub unsafe fn close_proposal(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |proposal_id: u32| {
         STATE.close_proposal(proposal_id)
     })
@@ -360,7 +380,7 @@ unsafe fn close_proposal(arg_len: u32) -> u32 {
 
 /// Vote on proposal - voter determined from call stack
 #[no_mangle]
-unsafe fn vote(arg_len: u32) -> u32 {
+pub unsafe fn vote(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |(proposal_id, vote_yes): (u32, bool)| {
         STATE.vote(proposal_id, vote_yes)
     })
@@ -368,25 +388,25 @@ unsafe fn vote(arg_len: u32) -> u32 {
 
 /// Get proposal by ID
 #[no_mangle]
-unsafe fn get_proposal(arg_len: u32) -> u32 {
+pub unsafe fn get_proposal(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |proposal_id: u32| STATE.get_proposal(proposal_id))
 }
 
 /// Get all proposals
 #[no_mangle]
-unsafe fn get_all_proposals(arg_len: u32) -> u32 {
+pub unsafe fn get_all_proposals(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |_: ()| STATE.get_all_proposals())
 }
 
 /// Get proposal count
 #[no_mangle]
-unsafe fn proposal_count(arg_len: u32) -> u32 {
+pub unsafe fn proposal_count(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |_: ()| STATE.proposal_count())
 }
 
 /// Check if caller has voted on proposal
 #[no_mangle]
-unsafe fn has_voted(arg_len: u32) -> u32 {
+pub unsafe fn has_voted(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |proposal_id: u32| {
         STATE.has_voted(proposal_id)
     })
@@ -394,7 +414,7 @@ unsafe fn has_voted(arg_len: u32) -> u32 {
 
 /// Check if specific account has voted on proposal
 #[no_mangle]
-unsafe fn has_account_voted(arg_len: u32) -> u32 {
+pub unsafe fn has_account_voted(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |(public_key, proposal_id): (PublicKey, u32)| {
         STATE.has_account_voted(public_key, proposal_id)
     })
@@ -402,7 +422,7 @@ unsafe fn has_account_voted(arg_len: u32) -> u32 {
 
 /// Get vote weight for caller on proposal
 #[no_mangle]
-unsafe fn get_vote_weight(arg_len: u32) -> u32 {
+pub unsafe fn get_vote_weight(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |proposal_id: u32| {
         STATE.get_vote_weight(proposal_id)
     })
@@ -410,7 +430,7 @@ unsafe fn get_vote_weight(arg_len: u32) -> u32 {
 
 /// Get vote weight for specific account on proposal
 #[no_mangle]
-unsafe fn get_account_vote_weight(arg_len: u32) -> u32 {
+pub unsafe fn get_account_vote_weight(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |(public_key, proposal_id): (PublicKey, u32)| {
         STATE.get_account_vote_weight(public_key, proposal_id)
     })
@@ -418,25 +438,25 @@ unsafe fn get_account_vote_weight(arg_len: u32) -> u32 {
 
 /// Get token balance for a public key
 #[no_mangle]
-unsafe fn get_balance(arg_len: u32) -> u32 {
+pub unsafe fn get_balance(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |public_key: PublicKey| STATE.get_balance(public_key))
 }
 
 /// Get the token contract ID used for voting weight
 #[no_mangle]
-unsafe fn token_contract(arg_len: u32) -> u32 {
+pub unsafe fn token_contract(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |_: ()| STATE.token_contract())
 }
 
 /// Get admin account
 #[no_mangle]
-unsafe fn admin(arg_len: u32) -> u32 {
+pub unsafe fn admin(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |_: ()| STATE.admin())
 }
 
 /// Check if caller is admin
 #[no_mangle]
-unsafe fn is_admin(arg_len: u32) -> u32 {
+pub unsafe fn is_admin(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |_: ()| STATE.is_admin())
 }
 
@@ -444,7 +464,7 @@ unsafe fn is_admin(arg_len: u32) -> u32 {
 
 /// Propose a new admin (admin only) - two-step transfer process
 #[no_mangle]
-unsafe fn propose_admin(arg_len: u32) -> u32 {
+pub unsafe fn propose_admin(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |new_admin: Account| {
         STATE.propose_admin(new_admin)
     })
@@ -452,18 +472,248 @@ unsafe fn propose_admin(arg_len: u32) -> u32 {
 
 /// Accept admin role (pending admin only) - completes the transfer
 #[no_mangle]
-unsafe fn accept_admin(arg_len: u32) -> u32 {
+pub unsafe fn accept_admin(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |_: ()| STATE.accept_admin())
 }
 
 /// Cancel pending admin transfer (admin only)
 #[no_mangle]
-unsafe fn cancel_admin_proposal(arg_len: u32) -> u32 {
+pub unsafe fn cancel_admin_proposal(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |_: ()| STATE.cancel_admin_proposal())
 }
 
 /// Get pending admin (if any)
 #[no_mangle]
-unsafe fn pending_admin(arg_len: u32) -> u32 {
+pub unsafe fn pending_admin(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |_: ()| STATE.pending_admin())
+}
+
+} // end of entry_points module
+
+// ==================== Unit Tests ====================
+// These tests verify the contract logic without requiring the VM
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    fn create_test_contract(admin_pk: PublicKey, token_contract: ContractId) -> VoteContract {
+        VoteContract {
+            admin: Account::External(admin_pk),
+            pending_admin: None,
+            token_contract,
+            proposals: Vec::new(),
+            votes: BTreeMap::new(),
+            next_proposal_id: 0,
+        }
+    }
+
+    fn mock_public_key(seed: u8) -> PublicKey {
+        // Create a deterministic but valid-looking public key for tests
+        let mut bytes = [0u8; 96];
+        for i in 0..96 {
+            bytes[i] = seed.wrapping_add(i as u8);
+        }
+        // Note: This won't create a cryptographically valid key,
+        // but it's sufficient for testing data structures
+        PublicKey::default()
+    }
+
+    // ==================== Proposal Tests ====================
+
+    #[test]
+    fn test_proposal_structure() {
+        let proposal = Proposal {
+            id: 0,
+            description: "Test proposal".to_string(),
+            yes_votes: 100,
+            no_votes: 50,
+            active: true,
+        };
+
+        assert_eq!(proposal.id, 0);
+        assert_eq!(proposal.description, "Test proposal");
+        assert_eq!(proposal.yes_votes, 100);
+        assert_eq!(proposal.no_votes, 50);
+        assert!(proposal.active);
+    }
+
+    #[test]
+    fn test_proposal_default() {
+        let proposal = Proposal::default();
+
+        assert_eq!(proposal.id, 0);
+        assert_eq!(proposal.description, "");
+        assert_eq!(proposal.yes_votes, 0);
+        assert_eq!(proposal.no_votes, 0);
+        assert!(!proposal.active);
+    }
+
+    // ==================== Account Tests ====================
+
+    #[test]
+    fn test_account_external() {
+        let pk = mock_public_key(1);
+        let account = Account::External(pk);
+
+        match account {
+            Account::External(_) => (),
+            Account::Contract(_) => panic!("Expected External account"),
+        }
+    }
+
+    #[test]
+    fn test_account_contract() {
+        let contract_id = ContractId::from_bytes([1u8; 32]);
+        let account = Account::Contract(contract_id);
+
+        match account {
+            Account::Contract(id) => assert_eq!(id, contract_id),
+            Account::External(_) => panic!("Expected Contract account"),
+        }
+    }
+
+    #[test]
+    fn test_account_ordering() {
+        let pk1 = mock_public_key(1);
+        let pk2 = mock_public_key(2);
+        let contract_id = ContractId::from_bytes([1u8; 32]);
+
+        let ext1 = Account::External(pk1);
+        let ext2 = Account::External(pk2);
+        let contract = Account::Contract(contract_id);
+
+        // External accounts should come before contract accounts
+        assert!(ext1 < contract);
+        assert!(ext2 < contract);
+    }
+
+    // ==================== VoteContract State Tests ====================
+
+    #[test]
+    fn test_contract_init() {
+        let admin_pk = mock_public_key(1);
+        let token_id = ContractId::from_bytes([2u8; 32]);
+
+        let mut contract = VoteContract {
+            admin: Account::Contract(ContractId::from_bytes([0u8; 32])),
+            pending_admin: None,
+            token_contract: ContractId::from_bytes([0u8; 32]),
+            proposals: Vec::new(),
+            votes: BTreeMap::new(),
+            next_proposal_id: 0,
+        };
+
+        contract.init(Account::External(admin_pk), token_id);
+
+        assert_eq!(contract.admin, Account::External(admin_pk));
+        assert_eq!(contract.token_contract, token_id);
+        assert!(contract.pending_admin.is_none());
+        assert_eq!(contract.next_proposal_id, 0);
+    }
+
+    #[test]
+    fn test_get_proposal_returns_none_for_nonexistent() {
+        let admin_pk = mock_public_key(1);
+        let token_id = ContractId::from_bytes([2u8; 32]);
+        let contract = create_test_contract(admin_pk, token_id);
+
+        assert!(contract.get_proposal(0).is_none());
+        assert!(contract.get_proposal(999).is_none());
+    }
+
+    #[test]
+    fn test_get_all_proposals_empty() {
+        let admin_pk = mock_public_key(1);
+        let token_id = ContractId::from_bytes([2u8; 32]);
+        let contract = create_test_contract(admin_pk, token_id);
+
+        let proposals = contract.get_all_proposals();
+        assert!(proposals.is_empty());
+    }
+
+    #[test]
+    fn test_proposal_count_empty() {
+        let admin_pk = mock_public_key(1);
+        let token_id = ContractId::from_bytes([2u8; 32]);
+        let contract = create_test_contract(admin_pk, token_id);
+
+        assert_eq!(contract.proposal_count(), 0);
+    }
+
+    #[test]
+    fn test_admin_getter() {
+        let admin_pk = mock_public_key(1);
+        let token_id = ContractId::from_bytes([2u8; 32]);
+        let contract = create_test_contract(admin_pk, token_id);
+
+        assert_eq!(contract.admin(), Account::External(admin_pk));
+    }
+
+    #[test]
+    fn test_token_contract_getter() {
+        let admin_pk = mock_public_key(1);
+        let token_id = ContractId::from_bytes([2u8; 32]);
+        let contract = create_test_contract(admin_pk, token_id);
+
+        assert_eq!(contract.token_contract(), token_id);
+    }
+
+    #[test]
+    fn test_pending_admin_initially_none() {
+        let admin_pk = mock_public_key(1);
+        let token_id = ContractId::from_bytes([2u8; 32]);
+        let contract = create_test_contract(admin_pk, token_id);
+
+        assert!(contract.pending_admin().is_none());
+    }
+
+    // ==================== Has Account Voted Tests ====================
+
+    #[test]
+    fn test_has_account_voted_false_no_proposal() {
+        let admin_pk = mock_public_key(1);
+        let voter_pk = mock_public_key(2);
+        let token_id = ContractId::from_bytes([2u8; 32]);
+        let contract = create_test_contract(admin_pk, token_id);
+
+        // No proposal exists, should return false
+        assert!(!contract.has_account_voted(voter_pk, 0));
+    }
+
+    #[test]
+    fn test_get_account_vote_weight_zero_no_vote() {
+        let admin_pk = mock_public_key(1);
+        let voter_pk = mock_public_key(2);
+        let token_id = ContractId::from_bytes([2u8; 32]);
+        let contract = create_test_contract(admin_pk, token_id);
+
+        // No vote cast, should return 0
+        assert_eq!(contract.get_account_vote_weight(voter_pk, 0), 0);
+    }
+
+    // ==================== Constants Tests ====================
+
+    #[test]
+    fn test_max_proposal_description_length() {
+        assert_eq!(MAX_PROPOSAL_DESC_LEN, 256);
+    }
+
+    #[test]
+    fn test_max_proposals() {
+        assert_eq!(MAX_PROPOSALS, 100);
+    }
+
+    // ==================== Error Message Tests ====================
+
+    #[test]
+    fn test_error_messages_defined() {
+        assert!(!error::NOT_ADMIN.is_empty());
+        assert!(!error::PROPOSAL_NOT_FOUND.is_empty());
+        assert!(!error::ALREADY_VOTED.is_empty());
+        assert!(!error::NO_VOTING_POWER.is_empty());
+        assert!(!error::PROPOSAL_NOT_ACTIVE.is_empty());
+        assert!(!error::CONTRACTS_CANNOT_VOTE.is_empty());
+    }
 }

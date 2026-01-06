@@ -1,0 +1,14 @@
+[package]
+name = "vote-tests"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+vote-contract = { path = "../contract" }
+
+dusk-core = { workspace = true }
+piecrust = "0.25"
+bytecheck = { workspace = true }
+rkyv = { workspace = true }
+rand = { workspace = true }

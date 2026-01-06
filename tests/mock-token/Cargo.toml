@@ -1,0 +1,21 @@
+[package]
+name = "mock-token"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+dusk-core = { workspace = true }
+bytecheck = { workspace = true }
+rkyv = { workspace = true }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+dusk-core = { version = "1.3", features = ["abi-dlmalloc"] }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+lto = true
+opt-level = "z"
+panic = "abort"

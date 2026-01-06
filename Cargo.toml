@@ -1,21 +1,14 @@
-[package]
-name = "vote-contract"
+[workspace]
+resolver = "2"
+members = ["contract", "tests", "tests/mock-token"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
-[dependencies]
+[workspace.dependencies]
 dusk-core = "1.3"
 bytecheck = { version = "0.6", default-features = false }
 rkyv = { version = "0.7", default-features = false, features = ["size_32"] }
-
-[target.'cfg(target_family = "wasm")'.dependencies]
-dusk-core = { version = "1.3", features = ["abi-dlmalloc"] }
-
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[profile.release]
-lto = true
-opt-level = "z"
-panic = "abort"
+rand = "0.8"
