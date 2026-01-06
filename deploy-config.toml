@@ -1,0 +1,11 @@
+# Dusk Testnet Deployment Configuration
+# Use with dusk-deploy-cli
+
+[blockchain_access]
+# Testnet RPC endpoint
+rusk_address = "https://nodes.dusk.network"
+prover_address = "https://provers.dusk.network"
+
+# Alternative endpoints (uncomment if needed):
+# rusk_address = "http://127.0.0.1:8080"
+# prover_address = "http://127.0.0.1:8080"
