@@ -27,14 +27,6 @@ const MAX_PROPOSAL_DESC_LEN: usize = 256;
 /// Maximum number of proposals
 const MAX_PROPOSALS: usize = 100;
 
-/// stDUSK token contract ID
-const STDUSK_CONTRACT_ID: [u8; 32] = [
-    0xfd, 0xbf, 0x49, 0x10, 0x2e, 0x76, 0xcf, 0x58,
-    0x22, 0x40, 0x03, 0x45, 0x1c, 0x6c, 0xb9, 0xe3,
-    0x40, 0x3c, 0x54, 0xff, 0x1d, 0x90, 0x42, 0xf8,
-    0xbc, 0x46, 0xec, 0x25, 0xc6, 0xa4, 0x33, 0x7c,
-];
-
 /// Error messages
 mod error {
     pub const SHIELDED_NOT_SUPPORTED: &str = "Shielded transactions not supported";
@@ -106,6 +98,8 @@ pub struct VoteContract {
     admin: Account,
     /// Pending admin for two-step transfer (None if no transfer pending)
     pending_admin: Option<Account>,
+    /// Token contract used for voting weight (e.g., stDUSK)
+    token_contract: ContractId,
     /// List of proposals
     proposals: Vec<Proposal>,
     /// Track who voted on which proposal (proposal_id -> account -> vote_weight)
@@ -118,26 +112,26 @@ pub struct VoteContract {
 static mut STATE: VoteContract = VoteContract {
     admin: Account::Contract(ContractId::from_bytes([0u8; 32])),
     pending_admin: None,
+    token_contract: ContractId::from_bytes([0u8; 32]),
     proposals: Vec::new(),
     votes: BTreeMap::new(),
     next_proposal_id: 0,
 };
 
-/// Query stDUSK balance for an account (external accounts only)
-fn get_stdusk_balance(public_key: &PublicKey) -> u64 {
-    let stdusk_id = ContractId::from_bytes(STDUSK_CONTRACT_ID);
-
-    // Call stDUSK contract's balance_of function
-    match abi::call(stdusk_id, "balance_of", public_key) {
+/// Query token balance for an account
+fn get_token_balance(token_contract: ContractId, public_key: &PublicKey) -> u64 {
+    // Call token contract's balance_of function
+    match abi::call(token_contract, "balance_of", public_key) {
         Ok(balance) => balance,
         Err(_) => 0, // Return 0 if call fails
     }
 }
 
 impl VoteContract {
-    /// Initialize the contract with specified admin
-    pub fn init(&mut self, admin: Account) {
+    /// Initialize the contract with specified admin and token contract
+    pub fn init(&mut self, admin: Account, token_contract: ContractId) {
         self.admin = admin;
+        self.token_contract = token_contract;
         self.pending_admin = None;
         self.next_proposal_id = 0;
     }
@@ -259,14 +253,14 @@ impl VoteContract {
     pub fn vote(&mut self, proposal_id: u32, vote_yes: bool) -> bool {
         let voter = sender_account();
 
-        // Get the public key for stDUSK balance lookup
+        // Get the public key for token balance lookup
         let public_key = match &voter {
             Account::External(pk) => *pk,
             Account::Contract(_) => return false, // Contracts cannot vote
         };
 
-        // Query stDUSK balance from the token contract
-        let token_balance = get_stdusk_balance(&public_key);
+        // Query token balance from the token contract
+        let token_balance = get_token_balance(self.token_contract, &public_key);
 
         // Must have stDUSK tokens to vote
         if token_balance == 0 {
@@ -365,19 +359,24 @@ impl VoteContract {
         sender_account() == self.admin
     }
 
-    /// Get stDUSK balance for a public key (queries stDUSK contract)
+    /// Get token balance for a public key (queries token contract)
     pub fn get_balance(&self, public_key: PublicKey) -> u64 {
-        get_stdusk_balance(&public_key)
+        get_token_balance(self.token_contract, &public_key)
+    }
+
+    /// Get the token contract ID used for voting weight
+    pub fn token_contract(&self) -> ContractId {
+        self.token_contract
     }
 }
 
 // ==================== Contract Entry Points ====================
 
-/// Initialize contract with specified admin
+/// Initialize contract with specified admin and token contract
 #[no_mangle]
 unsafe fn init(arg_len: u32) -> u32 {
-    abi::wrap_call(arg_len, |admin: Account| {
-        STATE.init(admin);
+    abi::wrap_call(arg_len, |(admin, token_contract): (Account, ContractId)| {
+        STATE.init(admin, token_contract);
     })
 }
 
@@ -455,10 +454,16 @@ unsafe fn get_account_vote_weight(arg_len: u32) -> u32 {
     })
 }
 
-/// Get stDUSK balance for a public key
+/// Get token balance for a public key
 #[no_mangle]
 unsafe fn get_balance(arg_len: u32) -> u32 {
     abi::wrap_call(arg_len, |public_key: PublicKey| STATE.get_balance(public_key))
+}
+
+/// Get the token contract ID used for voting weight
+#[no_mangle]
+unsafe fn token_contract(arg_len: u32) -> u32 {
+    abi::wrap_call(arg_len, |_: ()| STATE.token_contract())
 }
 
 /// Get admin account
