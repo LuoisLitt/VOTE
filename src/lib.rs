@@ -30,6 +30,17 @@ const MAX_PROPOSALS: usize = 100;
 /// Error messages
 mod error {
     pub const SHIELDED_NOT_SUPPORTED: &str = "Shielded transactions not supported";
+    pub const NOT_ADMIN: &str = "Caller is not admin";
+    pub const CANNOT_PROPOSE_SELF: &str = "Cannot propose self as new admin";
+    pub const NOT_PENDING_ADMIN: &str = "Caller is not pending admin";
+    pub const NO_PENDING_TRANSFER: &str = "No pending admin transfer";
+    pub const MAX_PROPOSALS_REACHED: &str = "Maximum proposals reached";
+    pub const DESCRIPTION_TOO_LONG: &str = "Description too long";
+    pub const PROPOSAL_NOT_FOUND: &str = "Proposal not found";
+    pub const CONTRACTS_CANNOT_VOTE: &str = "Contracts cannot vote";
+    pub const NO_VOTING_POWER: &str = "No tokens to vote with";
+    pub const PROPOSAL_NOT_ACTIVE: &str = "Proposal is not active";
+    pub const ALREADY_VOTED: &str = "Already voted on this proposal";
 }
 
 /// Account type - can be either an external account (user) or a contract
@@ -140,55 +151,29 @@ impl VoteContract {
 
     /// Propose a new admin (admin only)
     /// The new admin must call accept_admin() to complete the transfer
-    pub fn propose_admin(&mut self, new_admin: Account) -> bool {
+    pub fn propose_admin(&mut self, new_admin: Account) {
         let caller = sender_account();
-
-        // Only current admin can propose a new admin
-        if caller != self.admin {
-            return false;
-        }
-
-        // Cannot propose self as new admin
-        if new_admin == self.admin {
-            return false;
-        }
-
+        assert!(caller == self.admin, "{}", error::NOT_ADMIN);
+        assert!(new_admin != self.admin, "{}", error::CANNOT_PROPOSE_SELF);
         self.pending_admin = Some(new_admin);
-        true
     }
 
     /// Accept admin role (pending admin only)
     /// Completes the two-step admin transfer process
-    pub fn accept_admin(&mut self) -> bool {
+    pub fn accept_admin(&mut self) {
         let caller = sender_account();
-
-        // Check if there's a pending admin and caller matches
-        match &self.pending_admin {
-            Some(pending) if *pending == caller => {
-                self.admin = caller;
-                self.pending_admin = None;
-                true
-            }
-            _ => false,
-        }
+        let pending = self.pending_admin.expect(error::NO_PENDING_TRANSFER);
+        assert!(pending == caller, "{}", error::NOT_PENDING_ADMIN);
+        self.admin = caller;
+        self.pending_admin = None;
     }
 
     /// Cancel pending admin transfer (admin only)
-    pub fn cancel_admin_proposal(&mut self) -> bool {
+    pub fn cancel_admin_proposal(&mut self) {
         let caller = sender_account();
-
-        // Only current admin can cancel
-        if caller != self.admin {
-            return false;
-        }
-
-        // Check if there's actually a pending transfer
-        if self.pending_admin.is_none() {
-            return false;
-        }
-
+        assert!(caller == self.admin, "{}", error::NOT_ADMIN);
+        assert!(self.pending_admin.is_some(), "{}", error::NO_PENDING_TRANSFER);
         self.pending_admin = None;
-        true
     }
 
     /// Get the pending admin (if any)
@@ -200,18 +185,11 @@ impl VoteContract {
 
     /// Add a new proposal (admin only)
     /// Caller is determined from the call stack
-    pub fn add_proposal(&mut self, description: String) -> Option<u32> {
+    pub fn add_proposal(&mut self, description: String) -> u32 {
         let caller = sender_account();
-
-        if caller != self.admin {
-            return None;
-        }
-        if self.proposals.len() >= MAX_PROPOSALS {
-            return None;
-        }
-        if description.len() > MAX_PROPOSAL_DESC_LEN {
-            return None;
-        }
+        assert!(caller == self.admin, "{}", error::NOT_ADMIN);
+        assert!(self.proposals.len() < MAX_PROPOSALS, "{}", error::MAX_PROPOSALS_REACHED);
+        assert!(description.len() <= MAX_PROPOSAL_DESC_LEN, "{}", error::DESCRIPTION_TOO_LONG);
 
         let id = self.next_proposal_id;
         self.next_proposal_id += 1;
@@ -225,23 +203,18 @@ impl VoteContract {
         });
 
         self.votes.insert(id, BTreeMap::new());
-
-        Some(id)
+        id
     }
 
     /// Close a proposal (admin only)
     /// Caller is determined from the call stack
-    pub fn close_proposal(&mut self, proposal_id: u32) -> bool {
+    pub fn close_proposal(&mut self, proposal_id: u32) {
         let caller = sender_account();
-
-        if caller != self.admin {
-            return false;
-        }
-        if let Some(proposal) = self.proposals.iter_mut().find(|p| p.id == proposal_id) {
-            proposal.active = false;
-            return true;
-        }
-        false
+        assert!(caller == self.admin, "{}", error::NOT_ADMIN);
+        let proposal = self.proposals.iter_mut()
+            .find(|p| p.id == proposal_id)
+            .expect(error::PROPOSAL_NOT_FOUND);
+        proposal.active = false;
     }
 
     // ==================== Voting Functions ====================
@@ -250,48 +223,37 @@ impl VoteContract {
     /// Voter is determined from the call stack
     /// - proposal_id: which proposal to vote on
     /// - vote_yes: true for yes, false for no
-    pub fn vote(&mut self, proposal_id: u32, vote_yes: bool) -> bool {
+    pub fn vote(&mut self, proposal_id: u32, vote_yes: bool) {
         let voter = sender_account();
 
         // Get the public key for token balance lookup
         let public_key = match &voter {
             Account::External(pk) => *pk,
-            Account::Contract(_) => return false, // Contracts cannot vote
+            Account::Contract(_) => panic!("{}", error::CONTRACTS_CANNOT_VOTE),
         };
 
         // Query token balance from the token contract
         let token_balance = get_token_balance(self.token_contract, &public_key);
-
-        // Must have stDUSK tokens to vote
-        if token_balance == 0 {
-            return false;
-        }
+        assert!(token_balance > 0, "{}", error::NO_VOTING_POWER);
 
         // Check proposal exists and is active
-        let proposal = match self.proposals.iter_mut().find(|p| p.id == proposal_id) {
-            Some(p) if p.active => p,
-            _ => return false,
-        };
+        let proposal = self.proposals.iter_mut()
+            .find(|p| p.id == proposal_id)
+            .expect(error::PROPOSAL_NOT_FOUND);
+        assert!(proposal.active, "{}", error::PROPOSAL_NOT_ACTIVE);
 
         // Check if already voted
-        let proposal_votes = match self.votes.get_mut(&proposal_id) {
-            Some(v) => v,
-            None => return false,
-        };
+        let proposal_votes = self.votes.get_mut(&proposal_id)
+            .expect(error::PROPOSAL_NOT_FOUND);
+        assert!(!proposal_votes.contains_key(&voter), "{}", error::ALREADY_VOTED);
 
-        if proposal_votes.contains_key(&voter) {
-            return false; // Already voted
-        }
-
-        // Record vote with weight = stDUSK balance
+        // Record vote with weight = token balance
         proposal_votes.insert(voter, token_balance);
         if vote_yes {
             proposal.yes_votes = proposal.yes_votes.saturating_add(token_balance);
         } else {
             proposal.no_votes = proposal.no_votes.saturating_add(token_balance);
         }
-
-        true
     }
 
     // ==================== Query Functions ====================
